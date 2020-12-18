@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Tue Dec  8 19:52:18 2020
-
-@author: hjl
+@author: Hongyi Chen, Jaime De Anda, Jason Kao, Jiale Hu
 """
 
 import numpy as np
