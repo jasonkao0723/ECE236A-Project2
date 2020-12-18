@@ -83,9 +83,9 @@ def lp(X,y):
     constraints = [z >= 0, z <= 1]
     for t, y_t in enumerate(y):
         if y_t == 1:
-            constraints.append((X[t, :] @ z) >= 1)
+            constraints.append(cp.sum((X[t, :] @ z)) >= 1)
         else:
-            constraints.append((X[t, :] @ z) == 0)
+            constraints.append(cp.sum((X[t, :] @ z))== 0)
     
     
     prob = cp.Problem(objective, constraints)
@@ -132,9 +132,9 @@ def lp_nonoverlapping(X,y,A):
 
     for t, y_t in enumerate(y):
         if y_t == 1:
-            constraints.append((X[t, :] @ z ) >= 1)
+            constraints.append(cp.sum((X[t, :] @ z))>= 1)
         else:
-            constraints.append((X[t, :] @ z ) == 0)
+            constraints.append(cp.sum((X[t, :] @ z)) == 0)
     
     
     prob = cp.Problem(objective, constraints)
