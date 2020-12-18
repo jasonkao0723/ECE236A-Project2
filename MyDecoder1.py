@@ -23,7 +23,7 @@ def generator(n, prob_inf, T):
     X[0:col_weight,:] = 1
     idx = np.random.rand(*X.shape).argsort(0)
     X = X[idx, np.arange(X.shape[1])]
-    y_temp = X@ppl #result vector
+    y_temp = X @ ppl #result vector
     y = np.ones_like(y_temp)*(y_temp>=1) #test results
     
     return X,ppl, y #return population and test results
@@ -50,7 +50,7 @@ def generator_nonoverlapping(n, q, p, m, T):
     X[0:col_weight,:] = 1
     idx = np.random.rand(*X.shape).argsort(0)
     X = X[idx, np.arange(X.shape[1])]
-    y_temp = X@ppl
+    y_temp = X @ ppl
     y = np.ones_like(y_temp)*(y_temp>=1) #test results
     
     return X, ppl, y, A   #return family structured population, family assignment vector, test results
@@ -73,117 +73,236 @@ def add_noise_bsc(y, p_noisy):
     return y_noisy
     
 
-def lp(X, y):
-    # params
+def lp(X,y):
+
     _, n = X.shape
     
     # cp
-    z = cp.Variable(n, boolean=True)
+    z = cp.Variable(n)
     objective = cp.Minimize(cp.sum(z))
     constraints = [z >= 0, z <= 1]
     for t, y_t in enumerate(y):
         if y_t == 1:
-            constraints.append(X[t, :] @ z >= 1)
+            constraints.append((X[t, :] @ z) >= 1)
         else:
-            constraints.append(X[t, :] @ z == 0)
+            constraints.append((X[t, :] @ z) == 0)
     
     
     prob = cp.Problem(objective, constraints)
-    
-    # res = prob.solve(solver='GLPK_MI')
-    res = prob.solve()
-    # print(res)
-    
-    ppl_pred = z.value
-    return ppl_pred
+    prob.solve()
 
-def lp_nonoverlapping(X, y, A):
-    z = cp.Variable(X.shape[1], boolean=True)
+    pred_s = z.value
 
-    X_1 = X[y>0]
-    X_0 = X[y<1]
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value)
 
-    constraints = [(X_1 @ z) >= 1, (X_0 @ z) == 0, z>=0, z<=1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(A @ z)),constraints)
-    ppl_pred.solve()
+    return pred_s
 
-    return z.value
-    
-def lp_noisy_z(X, y):
-    zeta = 0.5
-    
-    z = cp.Variable(X.shape[1], boolean=True)
-    
-    X_1 = X[y>0]
-    sigma_1 = cp.Variable(X_1.shape[0])
+def lp_nonoverlapping(X,y,A):
 
-    X_0 = X[y<1]
-    sigma_0 = cp.Variable(X_0.shape[0])
-                          
-    constraints = [((X_1 @ z) + sigma_1) >= 1, ((X_0 @ z) - sigma_0) >= 0, z >= 0, sigma_0 == 0, sigma_1 >= 0, sigma_1 <= 1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(z) + cp.multiply(zeta, cp.sum(sigma_0) + cp.sum(sigma_1))), constraints)
-    ppl_pred.solve()
+    _, n = X.shape
     
-    # print(z.value)
+    # cp
+    z = cp.Variable(n)
+    
 
-    return z.value
+    A = A[A @ np.ones(n) > 0] # Delete empty families, i.e. families with zero members
+    f = cp.Variable(A.shape[0])
 
-def lp_noisy_bsc(X, y):
-    zeta = 0.5
-    
-    z = cp.Variable(X.shape[1], boolean=True)
-    
-    X_1 = X[y>0]
-    sigma_1 = cp.Variable(X_1.shape[0])
+    members_family = A @ np.ones(n)
 
-    X_0 = X[y<1]
-    sigma_0 = cp.Variable(X_0.shape[0])
-                          
-    constraints = [((X_1 @ z) + sigma_1) >= 1, ((X_0 @ z) - sigma_0) >= 0, z >= 0, sigma_0 >= 0, sigma_0 <= 1, sigma_1 >= 0, sigma_1 <= 1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(z) + cp.multiply(zeta, cp.sum(sigma_0) + cp.sum(sigma_1))), constraints)
-    ppl_pred.solve()
+    # Weights based on number of potentially infected people relative respected to family 
+    b = (members_family- np.round(np.sum(X[y<1],0)>0) @ A.T )
+    if (np.sum(b) > 0):
 
-    return z.value
+        c = 1 - b/(members_family)
+        b = 1 - b/np.sum(b)
+        b = b*c 
+        b = b @ A
+
+    else:
+        b = np.ones(n)
+
+
+    objective = cp.Minimize(cp.sum(cp.multiply(b,z))+cp.sum(f))
+    constraints = [z >= 0, z <= 1, A.T @ f >= z , f >= 0, f <= 1]
+
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append((X[t, :] @ z ) >= 1)
+        else:
+            constraints.append((X[t, :] @ z ) == 0)
+    
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value>0.5)
+
+    return pred_s
 
     
-def lp_noisy_z_nonoverlapping(X, y, A):
-    zeta = 0.5
-    
-    z = cp.Variable(X.shape[1], boolean=True)
-    
-    X_1 = X[y>0]
-    sigma_1 = cp.Variable(X_1.shape[0])
+def lp_noisy_z(X,y):
 
-    X_0 = X[y<1]
-    sigma_0 = cp.Variable(X_0.shape[0])
+    nt, n = X.shape
     
-    constraints = [((X_1 @ z) + sigma_1) >= 1, ((X_0 @ z) - sigma_0) >= 0, z >= 0, z <= 1, sigma_0 == 0, sigma_1 >= 0, sigma_1 <= 1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(A @ z) + cp.multiply(zeta, cp.sum(sigma_0) + cp.sum(sigma_1))), constraints)
-    # ppl_pred.solve(solver='ECOS_BB')
-    ppl_pred.solve()
-    
-    print(ppl_pred.status)
-    
-    print(z.value)
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
 
-    return z.value
+    objective = cp.Minimize(cp.sum(z)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] == 0)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+            
+    
+    
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value)
+
+    return pred_s
+
+    
+
+def lp_noisy_bsc(X,y):
+
+    nt, n = X.shape
+    
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
+
+    objective = cp.Minimize(cp.sum(z)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] <= 1)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+        print('None')
+    else:
+        pred_s = np.round(z.value)
+
+    return pred_s
+    
+
+
+def lp_noisy_z_nonoverlapping(X,y,A):
+
+    nt, n = X.shape
+    
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
+
+    A = A[A @ np.ones(n) > 0] # Delete empty families, i.e. families with zero members
+    f = cp.Variable(A.shape[0])
+
+    members_family = A @ np.ones(n)
+
+    # Weights based on number of potentially infected people relative respected to family 
+    b = (members_family- np.round(np.sum(X[y<1],0)>0) @ A.T )
+    if (np.sum(b) > 0):
+        c = 1 - b/(members_family)
+        b = 1 - b/np.sum(b)
+        b = b*c
+        b = b @ A
+    else:
+        b = np.ones(n)
+
+
+    objective = cp.Minimize(cp.sum(cp.multiply(b,z))+cp.sum(f)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0, A.T @ f >= z , f >= 0, f <= 1]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] == 0)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+            
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value>0.5)
+
+    return pred_s
+
     
 def lp_noisy_bsc_nonoverlapping(X,y,A):
-    zeta = 0.5
+    nt, n = X.shape
     
-    z = cp.Variable(X.shape[1], boolean=True)
-    
-    X_1 = X[y>0]
-    sigma_1 = cp.Variable(X_1.shape[0])
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
 
-    X_0 = X[y<1]
-    sigma_0 = cp.Variable(X_0.shape[0])
-    
-    constraints = [((X_1 @ z) + sigma_1) >= 1, ((X_0 @ z) - sigma_0) >= 0, z >= 0, sigma_0 >= 0, sigma_0 <= 1, sigma_1 >= 0, sigma_1 <= 1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(A @ z) + cp.multiply(zeta, cp.sum(sigma_0) + cp.sum(sigma_1))), constraints)
-    ppl_pred.solve()
+    A = A[A @ np.ones(n) > 0] # Delete empty families, i.e. families with zero members
+    f = cp.Variable(A.shape[0])
 
-    return z.value
+    members_family = A @ np.ones(n)
+
+    # Weights based on number of potentially infected people relative respected to family 
+    b = (members_family- np.round(np.sum(X[y<1],0)>0) @ A.T )
+    if (np.sum(b) > 0):
+        c = 1 - b/(members_family)
+        b = 1 - b/np.sum(b)
+        b = (b*c)
+        b = b @ A
+        b = b
+
+    else:
+        b = np.ones(n)
+
+    objective = cp.Minimize(cp.sum(cp.multiply(b,z))+cp.sum(f)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0, A.T @ f >= z , f >= 0, f <= 1]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] <= 1)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+    
+
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value>0.5)
+
+    return pred_s
 
 
 def get_stats(ppl, ppl_pred):
@@ -199,95 +318,209 @@ def get_stats(ppl, ppl_pred):
     Hamming = FP + FN
     return FP, FN, Hamming
 
-def show_non_noisy_results(N, q, p, m):
-    test_setSize = np.arange(100, 800, 100)
-    predictAcc = np.zeros(test_setSize.shape[0])
-    counter = 0
 
-    
-    for i_test in test_setSize:
-        [X, ppl, y] = generator(N, q, i_test)
-        pred_s = lp(X, y)
-        predictAcc[counter] = 1-sum(abs((ppl-pred_s.T).T))/1000
-        counter += 1
 
-    print(get_stats(ppl, pred_s))
+def plot_z(N, q, p, m):
+    test_setSize = np.array([100,300,500,1000])
+
+    p_noisy = [0.1,0.2] # Noises
+    n_runs = 100  # Runs 
     
-    predictAcc_nonoverlapping = np.zeros(test_setSize.shape[0])
-    counter = 0
+    #fig_filename = "Z_Noise_nonOverlap_0p1_0p8_200"
+    Title_fig = f"Z Noise on Tests q={q} p={p} m={m}"
     
-    for i_test in test_setSize:
-        [X, ppl, y, A] = generator_nonoverlapping(N, q, p, m, i_test)
-        pred_s = lp_nonoverlapping(X,y,A)
-        predictAcc_nonoverlapping[counter] = 1-sum(abs((ppl-pred_s.T).T))/1000
-        counter += 1
-        
-    print(get_stats(ppl, pred_s))
-        
+    linestyle = ['o-', 'o--']
+    linecolor = ['tab:blue','tab:orange','tab:green' ]
+    
+    
+    n_n = np.shape(p_noisy)[0]
+    predictAcc = np.zeros((3,test_setSize.shape[0],n_n))
+    predictAcc_noisy_z = np.zeros((3,test_setSize.shape[0],n_n))
+    predictAcc_noisy_z_nonoverlapping = np.zeros((3,test_setSize.shape[0],n_n))
+    
+    for i_n, i_noise in enumerate(p_noisy):
+    
+        counter = 0
+    
+        for i_test in test_setSize:
+    
+            temp_MEAN_predictAcc = np.zeros(n_runs)    
+            temp_MEAN_predictAcc_noisy_z = np.zeros(n_runs)
+            temp_MEAN_predictAcc_noisy_z_nonoverlapping  = np.zeros(n_runs)
+    
+            for i_run in np.arange(n_runs):
+                np.random.seed(i_run)
+    
+                [X,ppl, y, A] = generator_nonoverlapping(N, q, p, m, i_test)
+    
+                pred_s = lp_nonoverlapping(X,y,A.copy())
+                temp_FP,temp_FN,temp_Hamming = get_stats(ppl, pred_s)
+                predictAcc[0,counter,i_n] = predictAcc[0,counter,i_n]+temp_FN/np.sum(ppl)
+                predictAcc[1,counter,i_n] = predictAcc[1,counter,i_n]+temp_FP/(N-np.sum(ppl))
+                predictAcc[2,counter,i_n] = predictAcc[2,counter,i_n]+temp_Hamming/N
+    
+                y = add_noise_zchannel(y,i_noise)
+    
+                pred_s = lp_noisy_z_nonoverlapping(X,y,A.copy())
+                temp_FP,temp_FN,temp_Hamming =  get_stats(ppl, pred_s)
+                predictAcc_noisy_z_nonoverlapping[0,counter,i_n] = predictAcc_noisy_z_nonoverlapping[0,counter,i_n]+temp_FN/np.sum(ppl)
+                predictAcc_noisy_z_nonoverlapping[1,counter,i_n] = predictAcc_noisy_z_nonoverlapping[1,counter,i_n]+temp_FP/(N-np.sum(ppl))
+                predictAcc_noisy_z_nonoverlapping[2,counter,i_n] = predictAcc_noisy_z_nonoverlapping[2,counter,i_n]+temp_Hamming/N
+    
+            counter += 1
+            
+            
+            
+    predictAcc = predictAcc/n_runs
+    predictAcc_noisy_z = predictAcc_noisy_z/n_runs
+    predictAcc_noisy_z_nonoverlapping = predictAcc_noisy_z_nonoverlapping/n_runs
+    
+    
+    
     plt.figure()
-    plt.plot(test_setSize,predictAcc,'o-',test_setSize,predictAcc_nonoverlapping,'o-')
-    plt.title("Classification Accuracy")
+    plt.plot(test_setSize, predictAcc[0,:,0]*100,linestyle[0],label='LP_NO', color=linecolor[0])
+    plt.plot(test_setSize, predictAcc_noisy_z_nonoverlapping[0,:,0]*100,linestyle[0],label='LP_NO_0.1', color=linecolor[1])
+    plt.plot(test_setSize, predictAcc_noisy_z_nonoverlapping[0,:,1]*100,linestyle[0],label='LP_NO_0.2', color=linecolor[2])
+    
+    
+    plt.title(Title_fig)
     plt.xlabel("Number of Tests")
-    plt.ylabel("Average Accuracy")
+    plt.ylabel("FN Error Rate (%)")
     plt.grid(True)
+    plt.legend( loc='upper right')
+    #plt.savefig(fig_filename+"_FP"+".png", dpi=150)
     
-    
-    
-def show_noisy_z_results(N, q, p, m, p_noisy):
-    test_setSize = np.arange(100, 800, 100)
-    predictAcc = np.zeros(test_setSize.shape[0])
-    counter = 0
-
-    
-    for i_test in test_setSize:
-        [X, ppl, y] = generator(N, q, i_test)
-        y = add_noise_zchannel(y, p_noisy)
-        pred_s = lp_noisy_z(X, y)
-        predictAcc[counter] = 1-sum(abs((ppl-pred_s.T).T))/1000
-        counter += 1
-
-    predictAcc_nonoverlapping = np.zeros(test_setSize.shape[0])
-    counter = 0
-    
-    for i_test in test_setSize:
-        [X, ppl, y, A] = generator_nonoverlapping(N, q, p, m, i_test)
-        y = add_noise_zchannel(y, p_noisy)
-        pred_s = lp_noisy_z_nonoverlapping(X, y, A)
-        predictAcc_nonoverlapping[counter] = 1-sum(abs((ppl-pred_s.T).T))/1000
-        counter += 1
-        
     plt.figure()
-    plt.plot(test_setSize,predictAcc,'o-',test_setSize,predictAcc_nonoverlapping,'o-')
-    plt.title("Classification Accuracy")
-    plt.xlabel("Number of Tests")
-    plt.ylabel("Average Accuracy")
-    plt.grid(True)
+    plt.plot(test_setSize, predictAcc[1,:,0]*100,linestyle[0],label='LP_NO', color=linecolor[0])
+    plt.plot(test_setSize, predictAcc_noisy_z_nonoverlapping[1,:,0]*100,linestyle[0],label='LP_NO_0.1', color=linecolor[1])
+    plt.plot(test_setSize, predictAcc_noisy_z_nonoverlapping[1,:,1]*100,linestyle[0],label='LP_NO_0.2', color=linecolor[2])
     
+    plt.title(Title_fig)
+    plt.xlabel("Number of Tests")
+    plt.ylabel("FP Error Rate (%)")
+    plt.grid(True)
+    plt.legend( loc='upper right')
+    #plt.savefig(fig_filename+"_FN"+".png", dpi=150)
+    
+    plt.figure()
+    plt.plot(test_setSize, predictAcc[2,:,0]*100,linestyle[0],label='LP_NO', color=linecolor[0])
+    plt.plot(test_setSize, predictAcc_noisy_z_nonoverlapping[2,:,0]*100,linestyle[0],label='LP_NO_0.1', color=linecolor[1])
+    plt.plot(test_setSize, predictAcc_noisy_z_nonoverlapping[2,:,1]*100,linestyle[0],label='LP_NO_0.2', color=linecolor[2])
+    
+    plt.title(Title_fig)
+    plt.xlabel("Number of Tests")
+    plt.ylabel("Hamming Error Rate (%)")
+    plt.grid(True)
+    plt.legend( loc='upper right')
+    #plt.savefig(fig_filename+"_HM"+".png", dpi=150)
+
+def plot_bsc(N, q, p, m):
+    test_setSize = np.array([100,300,500,1000])
+    
+    
+    p_noisy = [0.1,0.2]
+    n_runs = 100  # Runs 
+    
+    # fig_filename = "BSC_Noise_nonOverlap_0p1_0p8_200_2"
+    Title_fig = f"BSC Noise on Tests q={q} p={p} m={m}"
+    
+    linestyle = ['o-', 'o--']
+    linecolor = ['tab:blue','tab:orange','tab:green' ]
+    
+    
+    n_n = np.shape(p_noisy)[0]
+    predictAcc = np.zeros((3,test_setSize.shape[0],n_n))
+    predictAcc_noisy_bsc = np.zeros((3,test_setSize.shape[0],n_n))
+    predictAcc_noisy_bsc_nonoverlapping = np.zeros((3,test_setSize.shape[0],n_n))
+    
+    for i_n, i_noise in enumerate(p_noisy):
+    
+        counter = 0
+    
+        for i_test in test_setSize:
+    
+            temp_MEAN_predictAcc = np.zeros(n_runs)    
+            temp_MEAN_predictAcc_noisy_z = np.zeros(n_runs)
+            temp_MEAN_predictAcc_noisy_z_nonoverlapping  = np.zeros(n_runs)
+    
+            for i_run in np.arange(n_runs):
+                np.random.seed(i_run)
+    
+                [X,ppl, y, A] = generator_nonoverlapping(N, q, p, m, i_test)
+                y = add_noise_zchannel(y,i_noise)
+    
+                pred_s = lp_nonoverlapping(X,y,A.copy())
+                temp_FP,temp_FN,temp_Hamming = get_stats(ppl, pred_s)
+                predictAcc[0,counter,i_n] = predictAcc[0,counter,i_n]+temp_FN/np.sum(ppl)
+                predictAcc[1,counter,i_n] = predictAcc[1,counter,i_n]+temp_FP/(N-np.sum(ppl))
+                predictAcc[2,counter,i_n] = predictAcc[2,counter,i_n]+temp_Hamming/N
+    
+    
+                pred_s = lp_noisy_bsc_nonoverlapping(X,y,A.copy())
+                temp_FP,temp_FN,temp_Hamming =  get_stats(ppl, pred_s)
+                predictAcc_noisy_bsc_nonoverlapping[0,counter,i_n] = predictAcc_noisy_bsc_nonoverlapping[0,counter,i_n]+temp_FN/np.sum(ppl)
+                predictAcc_noisy_bsc_nonoverlapping[1,counter,i_n] = predictAcc_noisy_bsc_nonoverlapping[1,counter,i_n]+temp_FP/(N-np.sum(ppl))
+                predictAcc_noisy_bsc_nonoverlapping[2,counter,i_n] = predictAcc_noisy_bsc_nonoverlapping[2,counter,i_n]+temp_Hamming/N
+    
+            counter += 1
+            
+            
+            
+    predictAcc = predictAcc/n_runs
+    predictAcc_noisy_bsc = predictAcc_noisy_bsc/n_runs
+    predictAcc_noisy_bsc_nonoverlapping = predictAcc_noisy_bsc_nonoverlapping/n_runs
+    
+    
+    
+    
+    
+    plt.figure()
+    plt.plot(test_setSize, predictAcc[0,:,0]*100,linestyle[0],label='LP_NO', color=linecolor[0])
+    plt.plot(test_setSize, predictAcc_noisy_bsc_nonoverlapping[0,:,0]*100,linestyle[0],label='LP_NO_0.1', color=linecolor[1])
+    plt.plot(test_setSize, predictAcc_noisy_bsc_nonoverlapping[0,:,1]*100,linestyle[0],label='LP_NO_0.2', color=linecolor[2])
+    
+    
+    plt.title(Title_fig)
+    plt.xlabel("Number of Tests")
+    plt.ylabel("FN Error Rate (%)")
+    plt.grid(True)
+    plt.legend( loc='upper right')
+    #plt.savefig(fig_filename+"_FP"+".png", dpi=150)
+    
+    plt.figure()
+    plt.plot(test_setSize, predictAcc[1,:,0]*100,linestyle[0],label='LP_NO', color=linecolor[0])
+    plt.plot(test_setSize, predictAcc_noisy_bsc_nonoverlapping[1,:,0]*100,linestyle[0],label='LP_NO_0.1', color=linecolor[1])
+    plt.plot(test_setSize, predictAcc_noisy_bsc_nonoverlapping[1,:,1]*100,linestyle[0],label='LP_NO_0.2', color=linecolor[2])
+    
+    plt.title(Title_fig)
+    plt.xlabel("Number of Tests")
+    plt.ylabel("FP Error Rate (%)")
+    plt.grid(True)
+    plt.legend( loc='upper right')
+    #plt.savefig(fig_filename+"_FN"+".png", dpi=150)
+    
+    plt.figure()
+    plt.plot(test_setSize, predictAcc[2,:,0]*100,linestyle[0],label='LP_NO', color=linecolor[0])
+    plt.plot(test_setSize, predictAcc_noisy_bsc_nonoverlapping[2,:,0]*100,linestyle[0],label='LP_NO_0.1', color=linecolor[1])
+    plt.plot(test_setSize, predictAcc_noisy_bsc_nonoverlapping[2,:,1]*100,linestyle[0],label='LP_NO_0.2', color=linecolor[2])
+    
+    plt.title(Title_fig)
+    plt.xlabel("Number of Tests")
+    plt.ylabel("Hamming Error Rate (%)")
+    plt.grid(True)
+    plt.legend( loc='upper right')
+    #plt.savefig(fig_filename+"_HM"+".png", dpi=150)
     
 
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     
     #Change these values according to your needs, you can also define new variables.
-    n = 1000                        # size of population
-    m = 50                          #number of families
-    p = 0.2                         #probability of infection
-    q = 0.2                         #probability of a family to be chosen as infected
-    T = 200                         #number of tests 
-    p_noisy = 0.1                   #test noise
-    
-    X, ppl, y = generator(n, p, T)
-    lp_ppl_pred = lp(X, y)
-    # print(ppl)
-    # print(lp_ppl_pred)
-    # print(get_stats(ppl, lp_ppl_pred), " out of ", n)
-    # for q in [0.1, 0.2]:
-    #     for T in range(100, 701, 100):
-    #         X, ppl, y = generator(n, p, T)
-    #         lp_ppl_pred = lp(X, y)
-    #         print(q, T, get_stats(ppl, lp_ppl_pred), " out of ", n)
-    
-    # show_non_noisy_results(n, q, p, m)
-    show_noisy_z_results(n, q, p, m, p_noisy)
-    
+    N = 1000                        # size of population
+    m = 200                         #number of families
+    p = 0.8                         #probability of infection
+    q = 0.1                         #probability of a family to be chosen as infected
+
+    plot_z(N, q, p, m)
+    plot_bsc(N, q, p, m)
     
