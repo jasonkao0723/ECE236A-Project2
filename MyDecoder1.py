@@ -324,7 +324,7 @@ def plot_z(N, q, p, m):
     test_setSize = np.array([100,300,500,1000])
 
     p_noisy = [0.1,0.2] # Noises
-    n_runs = 1  # Runs 
+    n_runs = 100  # Runs 
     
     #fig_filename = "Z_Noise_nonOverlap_0p1_0p8_200"
     Title_fig = f"Z Noise on Tests q={q} p={p} m={m}"
@@ -419,7 +419,7 @@ def plot_bsc(N, q, p, m):
     
     
     p_noisy = [0.1,0.2]
-    n_runs = 1  # Runs 
+    n_runs = 100  # Runs 
     
     # fig_filename = "BSC_Noise_nonOverlap_0p1_0p8_200_2"
     Title_fig = f"BSC Noise on Tests q={q} p={p} m={m}"
