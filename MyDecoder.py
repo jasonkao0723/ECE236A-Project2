@@ -1,15 +1,15 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Use this file as an template for your project 2
+Created on Tue Dec  8 19:52:18 2020
+
+@author: hjl
 """
+
 import numpy as np
 import cvxpy as cp
 import math
 from random import shuffle
-
-
-
-
     
 
 def generator(n, prob_inf, T):
@@ -23,10 +23,10 @@ def generator(n, prob_inf, T):
     X[0:col_weight,:] = 1
     idx = np.random.rand(*X.shape).argsort(0)
     X = X[idx, np.arange(X.shape[1])]
-    y_temp = X@ppl #result vector
+    y_temp = X @ ppl #result vector
     y = np.ones_like(y_temp)*(y_temp>=1) #test results
     
-    return X, ppl, y #return population and test results
+    return X,ppl, y #return population and test results
 
 def generator_nonoverlapping(n, q, p, m, T):
     
@@ -50,7 +50,7 @@ def generator_nonoverlapping(n, q, p, m, T):
     X[0:col_weight,:] = 1
     idx = np.random.rand(*X.shape).argsort(0)
     X = X[idx, np.arange(X.shape[1])]
-    y_temp = X@ppl
+    y_temp = X @ ppl
     y = np.ones_like(y_temp)*(y_temp>=1) #test results
     
     return X, ppl, y, A   #return family structured population, family assignment vector, test results
@@ -75,56 +75,251 @@ def add_noise_bsc(y, p_noisy):
 
 def lp(X,y):
 
-    z = cp.Variable((X.shape[1],1))
+    _, n = X.shape
+    
+    # cp
+    z = cp.Variable(n)
+    objective = cp.Minimize(cp.sum(z))
+    constraints = [z >= 0, z <= 1]
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append((X[t, :] @ z) >= 1)
+        else:
+            constraints.append((X[t, :] @ z) == 0)
+    
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
 
-    X_1 = X[y>0]
-    X_0 = X[y<1]
+    pred_s = z.value
 
-    constraints = [(X_1 @ z) >= 1, (X_0 @ z) == 0, z>=0, z<=1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(z)),constraints)
-    ppl_pred.solve()
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value)
 
-    return z.value
+    return pred_s
 
 def lp_nonoverlapping(X,y,A):
 
-    z = cp.Variable((X.shape[1],1))
+    _, n = X.shape
+    
+    # cp
+    z = cp.Variable(n)
+    
 
-    X_1 = X[y>0]
-    X_0 = X[y<1]
+    A = A[A @ np.ones(n) > 0] # Delete empty families, i.e. families with zero members
+    f = cp.Variable(A.shape[0])
 
-    constraints = [(X_1 @ z) >= 1, (X_0 @ z) == 0, z>=0, z<=1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(A @ z)),constraints)
-    ppl_pred.solve()
+    members_family = A @ np.ones(n)
 
-    return z.value
+    # Weights based on number of potentially infected people relative respected to family 
+    b = (members_family- np.round(np.sum(X[y<1],0)>0) @ A.T )
+    if (np.sum(b) > 0):
+
+        c = 1 - b/(members_family)
+        b = 1 - b/np.sum(b)
+        b = b*c 
+        b = b @ A
+
+    else:
+        b = np.ones(n)
+
+
+    objective = cp.Minimize(cp.sum(cp.multiply(b,z))+cp.sum(f))
+    constraints = [z >= 0, z <= 1, A.T @ f >= z , f >= 0, f <= 1]
+
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append((X[t, :] @ z ) >= 1)
+        else:
+            constraints.append((X[t, :] @ z ) == 0)
+    
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value>0.5)
+
+    return pred_s
+
     
 def lp_noisy_z(X,y):
-    z = cp.Variable((X.shape[1],1))
-    
-    X_1 = X[y>0]
-    sigma_1 = cp.Variable((X_1.shape[0],1))
 
-    X_0 = X[y<1]
-    sigma_0 = cp.Variable((X_0.shape[0],1))
+    nt, n = X.shape
     
-    constraints = [((X_1 @ z) + sigma_1)>= 1, ((X_0 @ z) - sigma_0) >= 0, z>=0, sigma_0>=0, sigma_0<=1, sigma_1>=0, sigma_1<=1]
-    ppl_pred = cp.Problem(cp.Minimize(cp.sum(z)+cp.multiply(0.5,cp.sum(sigma_0)+cp.sum(sigma_1))),constraints)
-    ppl_pred.solve()
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
 
-    return z.value
+    objective = cp.Minimize(cp.sum(z)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] == 0)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+            
+    
+    
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value)
+
+    return pred_s
+
+    
 
 def lp_noisy_bsc(X,y):
-    ppl_pred = 0
-    return ppl_pred
+
+    nt, n = X.shape
     
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
+
+    objective = cp.Minimize(cp.sum(z)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] <= 1)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+        print('None')
+    else:
+        pred_s = np.round(z.value)
+
+    return pred_s
+    
+
+
 def lp_noisy_z_nonoverlapping(X,y,A):
-    ppl_pred = 0
-    return ppl_pred
+
+    nt, n = X.shape
+    
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
+
+    A = A[A @ np.ones(n) > 0] # Delete empty families, i.e. families with zero members
+    f = cp.Variable(A.shape[0])
+
+    members_family = A @ np.ones(n)
+
+    # Weights based on number of potentially infected people relative respected to family 
+    b = (members_family- np.round(np.sum(X[y<1],0)>0) @ A.T )
+    if (np.sum(b) > 0):
+        c = 1 - b/(members_family)
+        b = 1 - b/np.sum(b)
+        b = b*c
+        b = b @ A
+    else:
+        b = np.ones(n)
+
+
+    objective = cp.Minimize(cp.sum(cp.multiply(b,z))+cp.sum(f)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0, A.T @ f >= z , f >= 0, f <= 1]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] == 0)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+            
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value>0.5)
+
+    return pred_s
+
     
 def lp_noisy_bsc_nonoverlapping(X,y,A):
-    ppl_pred = 0
-    return ppl_pred
+    nt, n = X.shape
+    
+    # cp
+    z = cp.Variable(n)
+    sigma = cp.Variable(nt)
+
+    A = A[A @ np.ones(n) > 0] # Delete empty families, i.e. families with zero members
+    f = cp.Variable(A.shape[0])
+
+    members_family = A @ np.ones(n)
+
+    # Weights based on number of potentially infected people relative respected to family 
+    b = (members_family- np.round(np.sum(X[y<1],0)>0) @ A.T )
+    if (np.sum(b) > 0):
+        c = 1 - b/(members_family)
+        b = 1 - b/np.sum(b)
+        b = (b*c)
+        b = b @ A
+        b = b
+
+    else:
+        b = np.ones(n)
+
+    objective = cp.Minimize(cp.sum(cp.multiply(b,z))+cp.sum(f)+cp.multiply(0.5,cp.sum(sigma)))
+    constraints = [(z) >= 0,(z) <= 1, sigma >= 0, A.T @ f >= z , f >= 0, f <= 1]
+
+    for t, y_t in enumerate(y):
+        if y_t == 1:
+            constraints.append(cp.sum(X[t, :] @ z) + sigma[t] >= 1)
+            constraints.append(sigma[t] <= 1)
+        else:
+            constraints.append((cp.sum(X[t, :] @ z) - sigma[t]) == 0)
+    
+
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    if z.value is None:
+        pred_s = np.zeros((X.shape[1]))
+    else:
+        pred_s = np.round(z.value>0.5)
+
+    return pred_s
+
+
+def get_stats(ppl, ppl_pred):
+    FP = 0
+    FN = 0
+    for i, p in enumerate(ppl):
+        if ppl_pred[i] != 0 and ppl_pred[i] != 1:
+            raise Exception("ppl_pred has invalid element")
+        if p == 0 and ppl_pred[i] == 1:
+            FP += 1
+        elif p == 1 and ppl_pred[i] == 0:
+            FN += 1
+    Hamming = FP + FN
+    return FP, FN, Hamming
+
+
+
     
 
 if __name__ == '__main__':
