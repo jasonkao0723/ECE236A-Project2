@@ -448,7 +448,6 @@ def plot_bsc(N, q, p, m):
                 np.random.seed(i_run)
     
                 [X,ppl, y, A] = generator_nonoverlapping(N, q, p, m, i_test)
-                y = add_noise_zchannel(y,i_noise)
     
                 pred_s = lp_nonoverlapping(X,y,A.copy())
                 temp_FP,temp_FN,temp_Hamming = get_stats(ppl, pred_s)
@@ -456,6 +455,7 @@ def plot_bsc(N, q, p, m):
                 predictAcc[1,counter,i_n] = predictAcc[1,counter,i_n]+temp_FP/(N-np.sum(ppl))
                 predictAcc[2,counter,i_n] = predictAcc[2,counter,i_n]+temp_Hamming/N
     
+    			y = add_noise_zchannel(y,i_noise)
     
                 pred_s = lp_noisy_bsc_nonoverlapping(X,y,A.copy())
                 temp_FP,temp_FN,temp_Hamming =  get_stats(ppl, pred_s)
